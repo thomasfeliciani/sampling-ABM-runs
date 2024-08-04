@@ -14,8 +14,7 @@ The following sections outline the content of the repository.
 ## sampling_demonstration.r
 This script imports the dataset created with NetLogo/BehaviorSpace and saved in _./input/_ , simulates ABM experiments with different design space sampling approaches, evaluates the experiments and plots the results. Plots are saved in _./output/_.
 
-_This script runs in R 4.3.1 and requires the following libraries to be installed:_ clhs, AlgDesign, lubridate, fpc, reshape2, ggplot2, openxlsx.
-
+_This script runs in R 4.4.0 and requires the following libraries to be installed:_ clhs, AlgDesign, skpr, lubridate, fpc, reshape2, ggplot2, openxlsx, compiler.
 
 ## util.r
 This script is 'sourced' by _sampling_demonstration.r_. It contains some utility functions for transforming data, plotting and drawing samples.

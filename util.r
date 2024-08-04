@@ -1,5 +1,100 @@
 #  Utility functions
 
+
+
+# For drawing optimal designs from a candidate set. It returns row indices of
+# the candidate set.
+drawOD <- \(
+  candidateSet, # a data.frame with all conditions to choose from
+  nTrials, # experiment size
+  formula,
+  augment = FALSE,
+  augmentRows = NA, # if augmented, specify the vector of row indexes.
+  replace = TRUE, # FALSE uses "algDesign"; TRUE uses "skpr"
+  optimality = "D" # optimality criterion. "D", "A", "I" are generally supported
+  #designSpace
+) {
+  
+  if (replace) {
+    ifelse(
+      augment,
+      OD <- skpr::gen_design(
+        candidateset = candidateSet, 
+        model = formula,#~ (.) ^ 2,
+        trials = nTrials,
+        augmentdesign = candidateSet[augmentRows,],
+        optimality = optimality
+      )[,names(candidateSet)],
+      OD <- skpr::gen_design(
+        candidateset = candidateSet, 
+        model = formula,#~ (.) ^ 2,
+        trials = nTrials,
+        #augmentdesign = augmentdesign,
+        optimality = optimality
+      )[,names(candidateSet)]
+    )
+    
+    x <- c() # Find the chosen row indices. Very slow implementation. ##########
+    for (i in 1:nTrials) {
+      for (j in 1:nrow(candidateSet)) {
+        if (all(candidateSet[j,] == OD[i,])) {
+          x[i] <- j
+          next
+        }
+      }
+    }
+    OD <- x
+    
+    
+  } else { # without replacement. We use algDesign::optFederov
+    redoIfError(
+      attempts = 5,
+      expression = {
+        #urs <- sample( # 
+        #  1:nrow(designSpace),
+        #  size = floor(sizeExperiment / 2),
+        #  replace = FALSE
+        #)
+        ifelse(
+          augment,
+          OD <- AlgDesign::optFederov( ## If augment __________________________
+            frml = formula, # Linear effects, with all two-way interactions
+            center = TRUE,
+            nTrials = nTrials,
+            augment = TRUE,
+            rows = augmentRows, # this is where the uniform random sample is fed in
+            data = candidateSet,#designSpace[,params],#####################
+            criterion = "D" 
+          )$rows,
+          OD <- AlgDesign::optFederov( ## If no augment _______________________
+            frml = formula, # Linear effects, with all two-way interactions
+            center = TRUE,
+            nTrials = nTrials,
+            augment = FALSE, ####
+            #rows = rows, # this is where the uniform random sample is fed in
+            data = candidateSet,#designSpace[,params],#####################
+            criterion = "D"
+          )$rows
+        )
+        
+        ## And then we draw an optimal D design, including the uniform sample:
+        #OD <- AlgDesign::optFederov(
+        #  frml = formula, # Linear effects, with all two-way interactions
+        #  center = TRUE,
+        #  nTrials = nTrials,
+        #  augment = TRUE,
+        #  rows = rows, # this is where the uniform random sample is fed in
+        #  data = designSpace[,params],
+        #  criterion = "D" #####################
+        #)$rows
+      }
+    )
+  }
+  
+  return(OD)
+}
+
+
 # Extract samples from a dataset according to the various sampling approaches:
 
 drawSamples <- function(
@@ -7,7 +102,8 @@ drawSamples <- function(
     designSpace,
     paramSpace = designSpace,
     designs = paste0("design_", letters[1:9]),# designs A-I where A is factorial
-    includeMultiRuns = FALSE,
+    includeMultiRuns = FALSE, # FALSE or an integer number.
+    replacement = TRUE,# for optimal designs, FALSE uses algDesign; TRUE "skpr"
     sizeExperiment = 15 # proportion of a factorial design.
 ) {
   
@@ -17,17 +113,40 @@ drawSamples <- function(
   # a) full factorial __________________________________________________________
   # Starting with one run per condition:
   if ("design_a" %in% designs) {
-    d_a <- numeric()
-    for (i in 1:nrow(paramSpace)) d_a[i] <- sample(
-      which(d$paramConfigID == paramSpace$paramConfigID[i]),
-      size = 1
-    )
+    d_a <- d_am <- numeric()
+    
+    for (i in 1:nrow(paramSpace)) {
+      #IDs <- which(d$designConfigID == paramSpace$designConfigID[i])
+      IDs <- which(d$paramConfigID == paramSpace$designConfigID[i])
+      IDs <- IDs[!IDs %in% d_a] 
+      ifelse(
+        length(IDs) == 1,
+        d_a[i] <- IDs,
+        d_a[i] <- sample(IDs, size = 1)
+      )
+      # Multiple runs per condition
+      if (includeMultiRuns != FALSE) {
+        if (length(IDs) > 1) { # If there are many runs to choose from...
+          d_am <- c(
+            d_am,
+            sample( # ... choose as many as possible ...
+              IDs,
+              size = min(c(length(IDs),includeMultiRuns)),
+              replace = FALSE
+            )
+          )
+        } else d_am <- c(d_am, IDs) # ... but if there's only one pick only that
+      }
+      
+    }
+    #for (i in 1:nrow(paramSpace)) d_a[i] <- sample(
+    #  which(d$paramConfigID == paramSpace$paramConfigID[i]),
+    #  size = 1
+    #)
     d$design_a <- FALSE
     d$design_a[d_a] <- TRUE
     
-    # Then multiple runs per condition:
-    if (includeMultiRuns) {
-      d_am <- 1:nrow(d)
+    if (includeMultiRuns != FALSE) {
       d$design_am <- FALSE
       d$design_am[d_am] <- TRUE
     }
@@ -48,7 +167,7 @@ drawSamples <- function(
     # assuming one run per condition (i.e. one run per sample in s), or multiple
     # 
     # One run per condition:
-    d_b <- numeric()
+    d_b <- d_bm <- numeric()
     for (i in 1:length(s)) {
       IDs <- which(d$designConfigID == designSpace$designConfigID[s[i]])
       ifelse(
@@ -56,13 +175,25 @@ drawSamples <- function(
         d_b[i] <- IDs,
         d_b[i] <- sample(IDs, size = 1)
       )
+      # Multiple runs per condition
+      if (includeMultiRuns != FALSE) {
+        if (length(IDs) > 1) { # If there are many runs to choose from...
+          d_bm <- c(
+            d_bm,
+            sample( # ... choose as many as possible ...
+              IDs,
+              size = min(c(length(IDs),includeMultiRuns)),
+              replace = FALSE
+            )
+          )
+        } else d_bm <- c(d_bm, IDs) # ... but if there's only one pick only that
+      }
+      
     }
     d$design_b <- FALSE
     d$design_b[d_b] <- TRUE
     
-    # Multiple runs per condition:
-    if (includeMultiRuns) {
-      d_bm <- which(d$designConfigID %in% designSpace$designConfigID[s])
+    if (includeMultiRuns != FALSE) {
       d$design_bm <- FALSE
       d$design_bm[d_bm] <- TRUE
     }
@@ -76,10 +207,15 @@ drawSamples <- function(
   # as we have; plus, if needed, it allows us to associate a cost for each
   # experiment run.
   if("design_c" %in% designs) {
-    s <- clhs::clhs(x = designSpace, size = sizeExperiment)
+    ifelse(
+      sizeExperiment == nrow(designSpace),
+      s <- 1:sizeExperiment, # return a factorial
+      s <- clhs::clhs(x = designSpace, size = sizeExperiment) # return a LHS
+    )
+    
     
     # One run per condition
-    d_c <- numeric()
+    d_c <- d_cm <- numeric()
     for (i in 1:length(s)) {
       IDs <- which(d$designConfigID == designSpace$designConfigID[s[i]])
       ifelse(
@@ -87,13 +223,24 @@ drawSamples <- function(
         d_c[i] <- IDs,
         d_c[i] <- sample(IDs, size = 1)
       )
+      # Multiple runs per condition
+      if (includeMultiRuns != FALSE) {
+        if (length(IDs) > 1) { # If there are many runs to choose from...
+          d_cm <- c(
+            d_cm,
+            sample( # ... choose as many as possible ...
+              IDs,
+              size = min(c(length(IDs),includeMultiRuns)),
+              replace = FALSE
+            )
+          )
+        } else d_cm <- c(d_cm, IDs) # ... but if there's only one pick only that
+      }
     }
     d$design_c <- FALSE
     d$design_c[d_c] <- TRUE
     
-    # Multiple runs per condition:
-    if (includeMultiRuns) {
-      d_cm <- which(d$designConfigID %in% designSpace$designConfigID[s])
+    if (includeMultiRuns != FALSE) {
       d$design_cm <- FALSE
       d$design_cm[d_cm] <- TRUE
     }
@@ -132,6 +279,10 @@ drawSamples <- function(
     "~ (.) ^ 2 + ",
     paste0("I(", quadraticTerms, " ^ 2)", collapse = " + ")
   ))
+  
+  # ... as well as a linear one, with all interactions:
+  formula <- as.formula("~ (.) ^ 2")
+  
   # Now everything's ready for generating optimal designs:
   
   
@@ -139,48 +290,54 @@ drawSamples <- function(
   if ("design_d" %in% designs) {
     # Here we split the sample into two subsamples: one from an opimal D design
     # and one from a uniform sample, here called "urs".
-    # The function AlgDesign::optFederov sort of handles this out of the box.
+    # The function AlgDesign::optFederov handles this out of the box.
     # 
-    s <- redoIfError(
-      attempts = 5,
-      expression = {
-        urs <- sample( # 
-          1:nrow(designSpace),
-          size = floor(sizeExperiment / 2),
-          replace = FALSE
-        )
-        
-        # And then we draw an optimal D design, including the uniform sample:
-        AlgDesign::optFederov(
-          frml = ~ (.) ^ 2, # Linear effects, with all two-way interactions
-          center = TRUE,
-          nTrials = sizeExperiment,
-          augment = TRUE,
-          rows = urs, # this is where the uniform random sample is fed in
-          data = designSpace[,params],
-          criterion = "D" #####################
-        )$rows
-      }
+    urs <- sample(
+      1:nrow(designSpace),
+      size = floor(sizeExperiment / 2),
+      replace = FALSE
+    )
+    s <- drawOD(
+      candidateSet = designSpace[,params],
+      nTrials = sizeExperiment,
+      formula = formula,
+      augment = TRUE,
+      augmentRows = urs,
+      replace = replacement,
+      optimality = "D"
     )
     
     # Now, our resulting samples for (e) D-OD + uniform sampling are:
     #
     # One run per condition:
-    d_d <- numeric()
+    d_d <- d_dm <- numeric()
     for (i in 1:length(s)) {
       IDs <- which(d$designConfigID == designSpace$designConfigID[s[i]])
+      #print(IDs)
+      IDs <- IDs[!IDs %in% d_d]# removing runs already chosen
       ifelse(
         length(IDs) == 1,
         d_d[i] <- IDs,
         d_d[i] <- sample(IDs, size = 1)
       )
+      # Multiple runs per condition
+      if (includeMultiRuns != FALSE) {
+        if (length(IDs) > 1) { # If there are many runs to choose from...
+          d_dm <- c(
+            d_dm,
+            sample( # ... choose as many as possible ...
+              IDs,
+              size = min(c(length(IDs),includeMultiRuns)),
+              replace = FALSE
+            )
+          )
+        } else d_dm <- c(d_dm, IDs) # ... but if there's only one pick only that
+      }
     }
     d$design_d <- FALSE
     d$design_d[d_d] <- TRUE
     
-    # Multiple runs per condition:
-    if (includeMultiRuns) {
-      d_dm <- which(d$designConfigID %in% designSpace$designConfigID[s])
+    if (includeMultiRuns != FALSE) {
       d$design_dm <- FALSE
       d$design_dm[d_dm] <- TRUE
     }
@@ -191,210 +348,56 @@ drawSamples <- function(
   # e) D-OD quadratic __________________________________________________________
   # An optimal D design, this time specified on a quadratic model.
   if("design_e" %in% designs){
-    s <- AlgDesign::optFederov(
-      frml = quadraticFormula,
-      #frml = ~ (.) ^ 2,
-      center = TRUE,
+    
+    s <- drawOD(
+      candidateSet = designSpace[,params],
       nTrials = sizeExperiment,
-      data = designSpace[,params],
-      criterion = "D"
-    )$rows
+      formula = quadraticFormula,
+      augment = FALSE,
+      replace = replacement,
+      optimality = "D"
+    )
+    #s <- AlgDesign::optFederov(
+    #  frml = quadraticFormula,
+    #  #frml = ~ (.) ^ 2,
+    #  center = TRUE,
+    #  nTrials = sizeExperiment,
+    #  data = designSpace[,params],
+    #  criterion = "D"
+    #)$rows
     
     # One run per condition
-    d_e <- numeric()
+    d_e <- d_em <- numeric()
     for (i in 1:length(s)) {
       IDs <- which(d$designConfigID == designSpace$designConfigID[s[i]])
+      IDs <- IDs[!IDs %in% d_e]# removing runs already chosen
       ifelse(
         length(IDs) == 1,
         d_e[i] <- IDs,
         d_e[i] <- sample(IDs, size = 1)
       )
+      # Multiple runs per condition
+      if (includeMultiRuns != FALSE) {
+        if (length(IDs) > 1) { # If there are many runs to choose from...
+          d_em <- c(
+            d_em,
+            sample( # ... choose as many as possible ...
+              IDs,
+              size = min(c(length(IDs),includeMultiRuns)),
+              replace = FALSE
+            )
+          )
+        } else d_em <- c(d_em, IDs) # ... but if there's only one pick only that
+      }
     }
     d$design_e <- FALSE
     d$design_e[d_e] <- TRUE
     
-    # Multiple runs per condition:
-    if (includeMultiRuns) {
-      d_em <- which(d$designConfigID %in% designSpace$designConfigID[s])
+    if (includeMultiRuns != FALSE) {
       d$design_em <- FALSE
       d$design_em[d_em] <- TRUE
     }
   }
-  
-  
-  
-  # f) A-OD linear + uniform sampling __________________________________________
-  if ("design_f" %in% designs) {
-    # Here we split the sample into two subsamples: one from an opimal D design
-    # and one from a uniform sample, here called "urs".
-    # The function AlgDesign::optFederov sort of handles this out of the box.
-    # 
-    s <- redoIfError(
-      attempts = 5,
-      expression = {
-        urs <- sample( # 
-          1:nrow(designSpace),
-          size = floor(sizeExperiment / 2),
-          replace = FALSE
-        )
-        
-        # And then we draw an optimal D design, including the uniform sample:
-        AlgDesign::optFederov(
-          frml = ~ (.) ^ 2, # Linear effects, with all two-way interactions
-          center = TRUE,
-          nTrials = sizeExperiment,
-          augment = TRUE,
-          rows = urs, # this is where the uniform random sample is fed in
-          data = designSpace[,params],
-          criterion = "A" #####################
-        )$rows
-      }
-    )
-    
-    # Now, our resulting samples for (e) D-OD + uniform sampling are:
-    #
-    # One run per condition:
-    d_f <- numeric()
-    for (i in 1:length(s)) {
-      IDs <- which(d$designConfigID == designSpace$designConfigID[s[i]])
-      ifelse(
-        length(IDs) == 1,
-        d_f[i] <- IDs,
-        d_f[i] <- sample(IDs, size = 1)
-      )
-    }
-    d$design_f <- FALSE
-    d$design_f[d_f] <- TRUE
-    
-    # Multiple runs per condition:
-    if (includeMultiRuns) {
-      d_fm <- which(d$designConfigID %in% designSpace$designConfigID[s])
-      d$design_fm <- FALSE
-      d$design_fm[d_fm] <- TRUE
-    }
-  }
-  
-  
-  
-  # g) A-OD quadratic __________________________________________________________
-  # An optimal D design, this time specified on a quadratic model.
-  if("design_g" %in% designs){
-    s <- AlgDesign::optFederov(
-      frml = quadraticFormula, #################
-      center = TRUE,
-      nTrials = sizeExperiment,
-      data = designSpace[,params],
-      criterion = "A" ####################
-    )$rows
-    
-    # One run per condition
-    d_g <- numeric()
-    for (i in 1:length(s)) {
-      IDs <- which(d$designConfigID == designSpace$designConfigID[s[i]])
-      ifelse(
-        length(IDs) == 1,
-        d_g[i] <- IDs,
-        d_g[i] <- sample(IDs, size = 1)
-      )
-    }
-    d$design_g <- FALSE
-    d$design_g[d_g] <- TRUE
-    
-    # Multiple runs per condition:
-    if (includeMultiRuns) {
-      d_gm <- which(d$designConfigID %in% designSpace$designConfigID[s])
-      d$design_gm <- FALSE
-      d$design_gm[d_gm] <- TRUE
-    }
-  }
-  
-  
-  
-  # h) I-OD linear + uniform sampling __________________________________________
-  if ("design_h" %in% designs) {
-    # Here we split the sample into two subsamples: one from an opimal D design
-    # and one from a uniform sample, here called "urs".
-    # The function AlgDesign::optFederov sort of handles this out of the box.
-    # 
-    s <- redoIfError(
-      attempts = 5,
-      expression = {
-        urs <- sample( # 
-          1:nrow(designSpace),
-          size = floor(sizeExperiment / 2),
-          replace = FALSE
-        )
-        
-        # And then we draw an optimal D design, including the uniform sample:
-        AlgDesign::optFederov(
-          frml = ~ (.) ^ 2, # Linear effects, with all two-way interactions
-          center = TRUE,
-          nTrials = sizeExperiment,
-          augment = TRUE,
-          rows = urs, # this is where the uniform random sample is fed in
-          data = designSpace[,params],
-          criterion = "I" #####################
-        )$rows
-      }
-    )
-    
-    # Now, our resulting samples for (e) D-OD + uniform sampling are:
-    #
-    # One run per condition:
-    d_h <- numeric()
-    for (i in 1:length(s)) {
-      IDs <- which(d$designConfigID == designSpace$designConfigID[s[i]])
-      ifelse(
-        length(IDs) == 1,
-        d_h[i] <- IDs,
-        d_h[i] <- sample(IDs, size = 1)
-      )
-    }
-    d$design_h <- FALSE
-    d$design_h[d_h] <- TRUE
-    
-    # Multiple runs per condition:
-    if (includeMultiRuns) {
-      d_hm <- which(d$designConfigID %in% designSpace$designConfigID[s])
-      d$design_hm <- FALSE
-      d$design_hm[d_hm] <- TRUE
-    }
-  }
-  
-  
-  
-  # i) I-OD quadratic __________________________________________________________
-  # An optimal D design, this time specified on a quadratic model.
-  if("design_i" %in% designs){
-    s <- AlgDesign::optFederov(
-      frml = quadraticFormula, #################
-      center = TRUE,
-      nTrials = sizeExperiment,
-      data = designSpace[,params],
-      criterion = "I" ####################
-    )$rows
-    
-    # One run per condition
-    d_i <- numeric()
-    for (i in 1:length(s)) {
-      IDs <- which(d$designConfigID == designSpace$designConfigID[s[i]])
-      ifelse(
-        length(IDs) == 1,
-        d_i[i] <- IDs,
-        d_i[i] <- sample(IDs, size = 1)
-      )
-    }
-    d$design_i <- FALSE
-    d$design_i[d_i] <- TRUE
-    
-    # Multiple runs per condition:
-    if (includeMultiRuns) {
-      d_im <- which(d$designConfigID %in% designSpace$designConfigID[s])
-      d$design_im <- FALSE
-      d$design_im[d_im] <- TRUE
-    }
-  }
-  
   
   
   return(d)
@@ -430,10 +433,18 @@ truncate <- function(x, min = 0, max = 1) {
   )
 }
 
+# translate p-values into significance stars
+ptostars <- \( 
+  x, # p-value(s)
+  labels = c("***", "**", "*", ""),
+  levels = c(0, 0.001, 0.01, 0.05, 1)
+) {
+  labels[findInterval(x, levels)]
+}
 
 # A function that tries to re-evaluate an expression a bunch of times if it
 # fails with an error:
-redoIfError <- function(attempts, expression) {
+redoIfError <- \(attempts, expression) {
   count <- 1
   s <- NULL
   while (count <= attempts & is.null(s)) {
